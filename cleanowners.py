@@ -46,6 +46,7 @@ def main():  # pragma: no cover
     no_codeowners_count = 0
     codeowners_count = 0
     users_count = 0
+    teams_count = 0
 
     if organization and not repository_list:
         gh_org = get_org(github_connection, organization)
@@ -136,6 +137,33 @@ def main():  # pragma: no cover
                         codeowners_file_contents.decoded.replace(bytes_username, b"")
                     )
 
+        # Extract the teams from the CODEOWNERS file
+        team_names = get_teams_from_codeowners(codeowners_file_contents)
+        
+        teams_to_remove = []
+        codeowners_file_contents_new = None
+        for team in team_names:
+            org = organization if organization else repo.owner.login
+            gh_org = get_org(github_connection, org)
+            if not gh_org:
+                print(f"Owner {org} of repo {repo} is not an organization.")
+                break
+
+            # Check to see if the team exists in the organization
+            if not gh_org.team_by_name(team):
+                print(
+                    f"\t{team} is not a team in {org}. Suggest removing it from {repo.full_name}"
+                )
+                teams_count += 1
+                teams_to_remove.append(team)
+                if not dry_run:
+                    # Remove that team from the codeowners_file_contents
+                    file_changed = True
+                    bytes_team = f"@{team}".encode("ASCII")
+                    codeowners_file_contents_new = (
+                        codeowners_file_contents.decoded.replace(bytes_team, b"")
+                    )
+
         # Store the repo and users to remove for reporting later
         if usernames_to_remove:
             repo_and_users_to_remove[repo] = usernames_to_remove
@@ -205,7 +233,7 @@ def get_repos_iterator(organization, repository_list, github_connection):
 
     return repos
 
-
+# Extract the usernames from the CODEOWNERS file
 def get_usernames_from_codeowners(codeowners_file_contents, ignore_teams=True):
     """Extract the usernames from the CODEOWNERS file"""
     usernames = []
@@ -231,6 +259,32 @@ def get_usernames_from_codeowners(codeowners_file_contents, ignore_teams=True):
                         usernames.append(handle)
     return usernames
 
+# Do the inverse of the above function and extract the teams from the CODEOWNERS file
+def get_teams_from_codeowners(codeowners_file_contents, ignore_handles=True):
+    """Extract the usernames from the CODEOWNERS file"""
+    team_names = []
+    for line in codeowners_file_contents.decoded.splitlines():
+        if line:
+            line = line.decode()
+            # skip comments
+            if line.lstrip().startswith("#"):
+                continue
+            # skip empty lines
+            if not line.strip():
+                continue
+            # Identify handles
+            if "@" in line:
+                teams = line.split("@")[1:]
+                for team in teams:
+                    team = teams.split()[0]
+                    # Identify team handles by the presence of a slash.
+                    # Ignore teams because non-org members cannot be in a team.
+                    if ignore_handles and "/" in team:
+                        team = team.split("/")[1]
+                        team_names.append(team)
+                    elif not ignore_handles:
+                        team_names.append(team)
+    return team_names
 
 def commit_changes(
     title,
